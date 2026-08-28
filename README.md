@@ -24,7 +24,7 @@ Random Forest classifier.
 ## Setup
 
 ```bash
-pip install earthengine-api geemap rasterio geopandas scikit-learn pandas numpy joblib
+pip install -r requirements.txt
 earthengine authenticate   # one-time
 ```
 

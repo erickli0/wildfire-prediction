@@ -4,7 +4,7 @@ ingest_dem.py
 Two ways to get elevation/slope/aspect, pick whichever fits your workflow:
 
 1) GEE (server-side, scales easily) -> export_dem_products_gee()
-2) Local raster via rasterio + richdem, for a DEM you already downloaded
+2) Local raster via rasterio + numpy, for a DEM you already downloaded
    (e.g. exported from QGIS, or a USGS 3DEP tile) -> compute_local_terrain()
 
 Usage:
@@ -61,8 +61,9 @@ def compute_local_terrain(dem_path, out_dir):
 
     gy, gx = np.gradient(elevation, py, px)
     slope = np.degrees(np.arctan(np.sqrt(gx ** 2 + gy ** 2)))
-    aspect = np.degrees(np.arctan2(-gx, gy))
-    aspect = np.where(aspect < 0, 90.0 - aspect, 90.0 - aspect)  # compass bearing
+    # atan2(east, north) of the downhill vector (-gx, gy) is already a compass
+    # bearing (0=N, 90=E); just wrap the -180..180 range into 0..360.
+    aspect = np.degrees(np.arctan2(-gx, gy)) % 360.0
 
     profile.update(dtype="float32", count=1)
 
