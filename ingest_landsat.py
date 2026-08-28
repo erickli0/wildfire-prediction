@@ -5,6 +5,14 @@ Pulls Landsat-8 Surface Reflectance imagery via Google Earth Engine,
 computes NDVI, and exports a mean-composite raster for a given
 region/date range to Google Drive (or GCS).
 
+By default, a multi-month date range is split into one export task per
+calendar month (`--single-export` turns this off). GEE caps how much a
+single export task can process (maxPixels, per-task compute time), so
+pulling a full fire season over a large AOI needs to be batched rather
+than requested as one export -- this is what actually lets the ingestion
+side scale to a large multi-GB/TB imagery pull without every export task
+failing or timing out.
+
 Setup:
     pip install earthengine-api geemap
     earthengine authenticate   # one-time browser auth
@@ -14,6 +22,9 @@ Usage:
         --region assets/study_area.geojson --out ndvi_summer2025
 """
 import argparse
+import calendar
+from datetime import date, timedelta
+
 import ee
 
 
@@ -59,6 +70,20 @@ def export_to_drive(image, region, description, scale=30):
     return task
 
 
+def month_ranges(start_date: str, end_date: str):
+    """Split [start_date, end_date) into (month_start, month_end) chunks,
+    each spanning at most one calendar month.
+    """
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    cur = start
+    while cur < end:
+        days_in_month = calendar.monthrange(cur.year, cur.month)[1]
+        month_end = min(date(cur.year, cur.month, days_in_month) + timedelta(days=1), end)
+        yield cur.isoformat(), month_end.isoformat()
+        cur = month_end
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", required=True, help="YYYY-MM-DD")
@@ -66,6 +91,10 @@ def main():
     parser.add_argument("--region", required=True, help="Path to GeoJSON AOI")
     parser.add_argument("--out", default="ndvi_composite")
     parser.add_argument("--scale", type=int, default=30)
+    parser.add_argument("--single-export", action="store_true",
+                         help="Export one composite for the whole date range instead of "
+                              "batching by month (fine for short ranges; large AOI/date-range "
+                              "pulls can hit GEE per-task limits)")
     args = parser.parse_args()
 
     ee.Initialize()
@@ -74,8 +103,17 @@ def main():
     region_fc = geemap.geojson_to_ee(args.region)
     region_geom = region_fc.geometry()
 
-    ndvi = build_ndvi_composite(region_geom, args.start, args.end)
-    export_to_drive(ndvi, region_geom, args.out, scale=args.scale)
+    if args.single_export:
+        ndvi = build_ndvi_composite(region_geom, args.start, args.end)
+        export_to_drive(ndvi, region_geom, args.out, scale=args.scale)
+        return
+
+    tasks = []
+    for chunk_start, chunk_end in month_ranges(args.start, args.end):
+        ndvi = build_ndvi_composite(region_geom, chunk_start, chunk_end)
+        description = f"{args.out}_{chunk_start[:7]}"
+        tasks.append(export_to_drive(ndvi, region_geom, description, scale=args.scale))
+    print(f"Started {len(tasks)} monthly export task(s) covering {args.start} to {args.end}")
 
 
 if __name__ == "__main__":

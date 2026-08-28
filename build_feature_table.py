@@ -17,6 +17,11 @@ Assumes:
     a cell is labeled 1 if it ever had an ignition (only spatial info is
     available).
 
+The (cell, date) table is streamed to `--out` one weather-date's worth of
+rows at a time rather than built as a single in-memory DataFrame, so
+memory use stays roughly O(grid cells) regardless of how many weather
+dates or how large the source rasters are.
+
 Usage:
     python build_feature_table.py --raster-dir data/processed \
         --weather data/processed/weather.csv \
@@ -25,6 +30,7 @@ Usage:
         --out data/processed/feature_table.csv
 """
 import argparse
+import os
 
 import geopandas as gpd
 import numpy as np
@@ -33,30 +39,34 @@ import rasterio
 
 
 def rasters_to_grid_df(raster_paths: dict, grid_size: int):
-    """Read each raster, tile it into `grid_size` px blocks, and return one
-    row per grid cell with columns = raster names + row/col + lon/lat.
+    """Read each raster (opened once, with windowed per-cell reads so
+    memory use stays bounded regardless of raster size) and return one row
+    per grid cell with columns = raster names + row/col + lon/lat.
     """
-    first_key = next(iter(raster_paths))
-    with rasterio.open(raster_paths[first_key]) as ref:
-        transform = ref.transform
-        height, width = ref.height, ref.width
-        crs = ref.crs
+    srcs = {name: rasterio.open(path) for name, path in raster_paths.items()}
+    try:
+        first = next(iter(srcs.values()))
+        transform = first.transform
+        height, width = first.height, first.width
+        crs = first.crs
 
-    rows = []
-    for r0 in range(0, height, grid_size):
-        for c0 in range(0, width, grid_size):
-            window = rasterio.windows.Window(
-                c0, r0, min(grid_size, width - c0), min(grid_size, height - r0)
-            )
-            cell = {"row": r0, "col": c0}
-            for name, path in raster_paths.items():
-                with rasterio.open(path) as src:
+        rows = []
+        for r0 in range(0, height, grid_size):
+            for c0 in range(0, width, grid_size):
+                window = rasterio.windows.Window(
+                    c0, r0, min(grid_size, width - c0), min(grid_size, height - r0)
+                )
+                cell = {"row": r0, "col": c0}
+                for name, src in srcs.items():
                     block = src.read(1, window=window)
                     valid = block[block != src.nodata] if src.nodata is not None else block
                     cell[name] = float(np.nanmean(valid)) if valid.size else np.nan
-            x, y = rasterio.transform.xy(transform, r0 + grid_size // 2, c0 + grid_size // 2)
-            cell["lon"], cell["lat"] = x, y
-            rows.append(cell)
+                x, y = rasterio.transform.xy(transform, r0 + grid_size // 2, c0 + grid_size // 2)
+                cell["lon"], cell["lat"] = x, y
+                rows.append(cell)
+    finally:
+        for src in srcs.values():
+            src.close()
 
     return pd.DataFrame(rows), crs
 
@@ -72,7 +82,7 @@ def find_cell_ignition_dates(grid_df, fire_labels_path, crs, grid_size, transfor
       - has_date: whether fire labels carried per-ignition dates.
 
     Runs once per unique cell (not per cell-date row), so it stays cheap
-    even after join_weather() expands the table across dates.
+    even once the output table is expanded across weather dates.
     """
     fires = gpd.read_file(fire_labels_path).to_crs(crs)
     has_date = "date" in fires.columns
@@ -93,38 +103,81 @@ def find_cell_ignition_dates(grid_df, fire_labels_path, crs, grid_size, transfor
     return ignitions, has_date
 
 
-def join_weather(grid_df, weather_path):
-    """Attach weather to the grid.
+def add_temporal_dryness_features(weather_df, precip_col="pr", window_days=7, dry_threshold_mm=1.0):
+    """Derive simple fire-weather dryness signals from the regional daily
+    weather series: trailing precip sum and days-since-last-rain.
 
-    If weather.csv has a 'date' column, cross-join it onto every cell so
-    each (cell, date) row carries that date's actual weather -- otherwise
-    weather is constant across all rows and the model can't learn
-    anything from it. Without a 'date' column, fall back to broadcasting
-    the period mean to every cell.
+    Ignition risk is highly driven by cumulative dryness rather than a
+    single day's weather, so these give the model temporal signal that a
+    per-day snapshot alone doesn't.
+    """
+    weather_df = weather_df.sort_values("date").reset_index(drop=True)
+    if precip_col not in weather_df.columns:
+        return weather_df
+
+    weather_df[f"{precip_col}_{window_days}day_sum"] = (
+        weather_df[precip_col].rolling(window_days, min_periods=1).sum()
+    )
+
+    rained = weather_df[precip_col] > dry_threshold_mm
+    last_rain_idx = pd.Series(np.where(rained, weather_df.index, np.nan)).ffill()
+    weather_df["days_since_rain"] = (weather_df.index - last_rain_idx).fillna(len(weather_df)).astype(float)
+
+    return weather_df
+
+
+def write_feature_table(grid_df, ignitions, has_date, weather_path, out_path):
+    """Stream the (cell, date) feature table to `out_path` one weather
+    date at a time, instead of materializing every (cell, date) row in
+    memory at once (a cross join of cells x dates can get very large).
+
+    Returns (total_rows, ignition_rows).
     """
     weather_df = pd.read_csv(weather_path)
+    weather_has_date = "date" in weather_df.columns
 
-    if "date" not in weather_df.columns:
-        means = weather_df.mean(numeric_only=True)
-        for col, val in means.items():
-            grid_df[col] = val
-        return grid_df
+    total_rows = 0
+    ignition_rows = 0
+    wrote_header = False
 
-    weather_df = weather_df.copy()
-    weather_df["date"] = pd.to_datetime(weather_df["date"]).dt.normalize()
-    return grid_df.merge(weather_df, how="cross")
+    def emit(chunk):
+        nonlocal total_rows, ignition_rows, wrote_header
+        chunk = chunk.dropna(subset=["ndvi", "elevation", "slope", "aspect"])
+        if chunk.empty:
+            return
+        chunk.to_csv(out_path, mode="a" if wrote_header else "w", header=not wrote_header, index=False)
+        wrote_header = True
+        total_rows += len(chunk)
+        ignition_rows += int(chunk["ignition"].sum())
 
+    if weather_has_date:
+        weather_df["date"] = pd.to_datetime(weather_df["date"]).dt.normalize()
+        weather_df = add_temporal_dryness_features(weather_df)
 
-def label_ignitions(grid_df, ignitions, has_date):
-    if has_date:
-        grid_df["ignition"] = grid_df.apply(
-            lambda r: int(r["date"] in ignitions.get((r.row, r.col), set())), axis=1
-        )
+        for _, weather_row in weather_df.iterrows():
+            chunk = grid_df.copy()
+            weather_date = weather_row["date"]
+            for col, val in weather_row.items():
+                if col != "date":
+                    chunk[col] = val
+            chunk["date"] = weather_date
+            chunk["ignition"] = [
+                int(weather_date in ignitions.get((r, c), set()))
+                for r, c in zip(chunk["row"], chunk["col"])
+            ]
+            emit(chunk)
     else:
-        grid_df["ignition"] = grid_df.apply(
-            lambda r: int(bool(ignitions.get((r.row, r.col), False))), axis=1
-        )
-    return grid_df
+        means = weather_df.mean(numeric_only=True)
+        chunk = grid_df.copy()
+        for col, val in means.items():
+            chunk[col] = val
+        chunk["ignition"] = [
+            int(bool(ignitions.get((r, c), False)))
+            for r, c in zip(chunk["row"], chunk["col"])
+        ]
+        emit(chunk)
+
+    return total_rows, ignition_rows
 
 
 def main():
@@ -143,16 +196,18 @@ def main():
         "aspect": f"{args.raster_dir}/aspect.tif",
     }
 
+    input_bytes = sum(os.path.getsize(p) for p in raster_paths.values() if os.path.exists(p))
+    input_bytes += os.path.getsize(args.weather) if os.path.exists(args.weather) else 0
+    print(f"Reading {input_bytes / 1e9:.2f} GB of input rasters + weather")
+
     grid_df, crs = rasters_to_grid_df(raster_paths, args.grid_size)
     ignitions, has_date = find_cell_ignition_dates(grid_df, args.fire_labels, crs, args.grid_size)
 
-    grid_df = join_weather(grid_df, args.weather)
-    grid_df = label_ignitions(grid_df, ignitions, has_date)
+    total_rows, ignition_rows = write_feature_table(grid_df, ignitions, has_date, args.weather, args.out)
 
-    grid_df = grid_df.dropna(subset=["ndvi", "elevation", "slope", "aspect"])
-    grid_df.to_csv(args.out, index=False)
-    print(f"Wrote {len(grid_df)} rows to {args.out}")
-    print(f"Ignition rate: {grid_df['ignition'].mean():.4f}")
+    print(f"Wrote {total_rows} rows to {args.out}")
+    if total_rows:
+        print(f"Ignition rate: {ignition_rows / total_rows:.4f}")
 
 
 if __name__ == "__main__":
