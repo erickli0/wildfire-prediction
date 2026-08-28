@@ -20,9 +20,15 @@ outputs/
 # Scratch/test files from local runs
 test_*.geojson
 test_*.csv
+real_*.geojson
+real_*.csv
+real_*.log
 
 # OS/editor cruft
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+
+# Claude Code harness state
+.claude/

@@ -50,7 +50,7 @@ def spatial_train_test_split(df, group_col, test_size=0.2, seed=42):
     return df.iloc[train_idx], df.iloc[test_idx]
 
 
-def tune_model(X_train, y_train, groups, n_iter=40, cv_folds=5, seed=42):
+def tune_model(X_train, y_train, groups, n_iter=40, cv_folds=5, seed=42, n_jobs=-1):
     param_dist = {
         "n_estimators": [200, 300, 500, 800, 1200],
         "max_depth": [None, 8, 12, 20, 30],
@@ -59,7 +59,13 @@ def tune_model(X_train, y_train, groups, n_iter=40, cv_folds=5, seed=42):
         "max_features": ["sqrt", "log2", 0.5, 0.7],
         "class_weight": ["balanced", "balanced_subsample"],
     }
-    base = RandomForestClassifier(random_state=seed, n_jobs=-1)
+    # n_jobs=1 here deliberately: RandomizedSearchCV already parallelizes
+    # across candidates/folds below. Parallelizing the forest *inside* each
+    # of those workers too is nested parallelism -- it multiplies process/
+    # memory usage combinatorially (n_jobs outer x n_jobs inner) rather than
+    # speeding anything up, and is a likely cause of OOM crashes on a single
+    # machine.
+    base = RandomForestClassifier(random_state=seed, n_jobs=1)
     cv_splits = list(GroupKFold(n_splits=cv_folds).split(X_train, y_train, groups=groups))
     search = RandomizedSearchCV(
         base,
@@ -68,7 +74,7 @@ def tune_model(X_train, y_train, groups, n_iter=40, cv_folds=5, seed=42):
         scoring="roc_auc",
         cv=cv_splits,
         random_state=seed,
-        n_jobs=-1,
+        n_jobs=n_jobs,
     )
     search.fit(X_train, y_train)
     print("Best params:", search.best_params_)
@@ -114,6 +120,10 @@ def main():
                          help="Column to group-split on (spatial row/tile, or year)")
     parser.add_argument("--n-iter", type=int, default=40, help="RandomizedSearchCV iterations")
     parser.add_argument("--cv-folds", type=int, default=5, help="Grouped folds for tuning + reporting")
+    parser.add_argument("--n-jobs", type=int, default=-1,
+                         help="Parallel workers for the hyperparameter search (-1 = all cores). "
+                              "The forest itself always runs single-threaded per worker to avoid "
+                              "nested parallelism; lower this if you hit memory pressure.")
     parser.add_argument("--out", default="model.joblib")
     args = parser.parse_args()
 
@@ -125,7 +135,7 @@ def main():
 
     model, best_params, best_cv_auc = tune_model(
         X_train, y_train, train_df[args.group_col].values,
-        n_iter=args.n_iter, cv_folds=args.cv_folds,
+        n_iter=args.n_iter, cv_folds=args.cv_folds, n_jobs=args.n_jobs,
     )
 
     y_pred_proba = model.predict_proba(X_test)[:, 1]
