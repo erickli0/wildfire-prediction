@@ -38,12 +38,12 @@ def build_terrain_stack(region, dem_asset="USGS/3DEP/10m"):
     )
 
 
-def export_dem_products_gee(region_path, out_prefix, scale=30):
+def export_dem_products_gee(region_path, out_prefix, project, scale=30):
     import ee
     import geemap
 
-    ee.Initialize()
-    region_fc = geemap.geojson_to_ee(region_path)
+    ee.Initialize(project=project)
+    region_fc = geemap.vector_to_ee(region_path)
     region = region_fc.geometry()
 
     stack = build_terrain_stack(region)
@@ -122,11 +122,12 @@ def main():
     parser.add_argument("--dem", help="Path to local DEM GeoTIFF (local mode)")
     parser.add_argument("--block-rows", type=int, default=1024,
                          help="Rows per strip when processing a local DEM (local mode)")
+    parser.add_argument("--project", help="Earth Engine Cloud project id (gee mode)")
     parser.add_argument("--out", default="terrain")
     args = parser.parse_args()
 
     if args.mode == "gee":
-        export_dem_products_gee(args.region, args.out)
+        export_dem_products_gee(args.region, args.out, args.project)
     else:
         compute_local_terrain(args.dem, args.out, block_rows=args.block_rows)
 

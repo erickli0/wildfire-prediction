@@ -20,12 +20,12 @@ VARS = {
 }
 
 
-def build_weather_table(region_path, start_date, end_date, scale=4000):
+def build_weather_table(region_path, start_date, end_date, project, scale=4000):
     import ee
     import geemap
 
-    ee.Initialize()
-    region_fc = geemap.geojson_to_ee(region_path)
+    ee.Initialize(project=project)
+    region_fc = geemap.vector_to_ee(region_path)
     region = region_fc.geometry()
 
     collection = (
@@ -55,10 +55,11 @@ def main():
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
     parser.add_argument("--region", required=True)
+    parser.add_argument("--project", required=True, help="Earth Engine Cloud project id")
     parser.add_argument("--out", default="weather.csv")
     args = parser.parse_args()
 
-    fc = build_weather_table(args.region, args.start, args.end)
+    fc = build_weather_table(args.region, args.start, args.end, args.project)
 
     import geemap
     geemap.ee_export_vector(fc, args.out)

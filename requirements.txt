@@ -1,6 +1,10 @@
-# GEE ingestion (ingest_landsat.py, ingest_dem.py --mode gee, ingest_weather.py)
-earthengine-api>=0.1.400
-geemap>=0.32.0
+# GEE ingestion (ingest_landsat.py, ingest_dem.py --mode gee, ingest_weather.py,
+# build_feature_table.py --mode gee). Needs an Earth Engine-enabled Google
+# Cloud project passed via --project (ee.Initialize() with no project id
+# fails on current earthengine-api). geemap>=0.38 is a hard floor here --
+# it renamed geojson_to_ee -> vector_to_ee, and the scripts use the new name.
+earthengine-api>=1.7.0
+geemap>=0.38.0
 
 # Raster/vector I/O and feature table building (ingest_dem.py --mode local,
 # build_feature_table.py)

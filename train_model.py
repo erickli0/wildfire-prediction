@@ -83,11 +83,27 @@ def grouped_cv_auc(model, X, y, groups, n_splits=5):
     """
     cv = GroupKFold(n_splits=n_splits)
     scores = []
+    skipped = 0
     for train_idx, test_idx in cv.split(X, y, groups=groups):
+        y_train_fold, y_test_fold = y.iloc[train_idx], y.iloc[test_idx]
+        # A fold can end up with only one class present -- e.g. a handful of
+        # ignitions split unluckily across groups -- in which case the model
+        # can't be fit meaningfully or ROC-AUC isn't defined. Skip it rather
+        # than crash (predict_proba only has one column when trained on a
+        # single class) or report a misleading score.
+        if y_train_fold.nunique() < 2 or y_test_fold.nunique() < 2:
+            skipped += 1
+            continue
         fold_model = clone(model)
-        fold_model.fit(X.iloc[train_idx], y.iloc[train_idx])
+        fold_model.fit(X.iloc[train_idx], y_train_fold)
         proba = fold_model.predict_proba(X.iloc[test_idx])[:, 1]
-        scores.append(roc_auc_score(y.iloc[test_idx], proba))
+        scores.append(roc_auc_score(y_test_fold, proba))
+
+    if skipped:
+        print(f"Skipped {skipped}/{n_splits} CV fold(s) with only one class present "
+              f"(too few ignitions relative to fold count)")
+    if not scores:
+        return float("nan"), float("nan"), []
     return float(np.mean(scores)), float(np.std(scores)), scores
 
 

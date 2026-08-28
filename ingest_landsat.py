@@ -95,12 +95,13 @@ def main():
                          help="Export one composite for the whole date range instead of "
                               "batching by month (fine for short ranges; large AOI/date-range "
                               "pulls can hit GEE per-task limits)")
+    parser.add_argument("--project", required=True, help="Earth Engine Cloud project id")
     args = parser.parse_args()
 
-    ee.Initialize()
+    ee.Initialize(project=args.project)
 
     import geemap
-    region_fc = geemap.geojson_to_ee(args.region)
+    region_fc = geemap.vector_to_ee(args.region)
     region_geom = region_fc.geometry()
 
     if args.single_export:

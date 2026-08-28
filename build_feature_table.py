@@ -303,14 +303,17 @@ def attach_ignition_dates_gee(grid_reduced_fc, fire_labels, region):
     import geemap
 
     if fire_labels.endswith((".geojson", ".json")):
-        fires_fc = geemap.geojson_to_ee(fire_labels)
+        fires_fc = geemap.vector_to_ee(fire_labels)
     else:
         fires_fc = ee.FeatureCollection(fire_labels)
     fires_fc = fires_fc.filterBounds(region)
 
     has_date = "date" in fires_fc.first().propertyNames().getInfo()
 
-    joined = ee.Join.saveAll(matchesKey="fire_matches").apply(
+    # outer=True is required here: saveAll defaults to inner-join semantics
+    # and silently drops every grid cell with no matching fire, which is
+    # most of the grid.
+    joined = ee.Join.saveAll(matchesKey="fire_matches", outer=True).apply(
         primary=grid_reduced_fc,
         secondary=fires_fc,
         condition=ee.Filter.intersects(leftField=".geo", rightField=".geo", maxError=1),
@@ -362,8 +365,8 @@ def run_gee(args):
     import ee
     import geemap
 
-    ee.Initialize()
-    region = geemap.geojson_to_ee(args.region).geometry()
+    ee.Initialize(project=args.project)
+    region = geemap.vector_to_ee(args.region).geometry()
 
     grid_fc = build_grid_fc(region, args.cell_size_m)
     reduced_fc = reduce_rasters_to_grid_gee(
@@ -393,8 +396,10 @@ def run_finalize(args):
 
     if has_date:
         ignitions = {cid: parse_ignition_dates(v) for cid, v in zip(cells_df["cell_id"], cells_df["ignition_dates"])}
+        cells_df = cells_df.drop(columns=["ignition_dates"])
     else:
         ignitions = {cid: bool(v) for cid, v in zip(cells_df["cell_id"], cells_df.get("has_ignition", False))}
+        cells_df = cells_df.drop(columns=["has_ignition"], errors="ignore")
 
     total_rows, ignition_rows = stream_cell_date_table(
         cells_df, lambda df: list(df["cell_id"]), ignitions, has_date, args.weather, args.out,
@@ -420,6 +425,7 @@ def main():
     parser.add_argument("--cell-size-m", type=int, default=250, help="Grid cell size in meters (gee mode)")
     parser.add_argument("--scale", type=int, default=30, help="reduceRegions scale in meters (gee mode)")
     parser.add_argument("--dem-asset", default="USGS/3DEP/10m", help="EE DEM image asset id (gee mode)")
+    parser.add_argument("--project", help="Earth Engine Cloud project id (gee mode)")
     parser.add_argument("--sync", action="store_true",
                          help="Fetch the per-cell table directly instead of exporting to Drive "
                               "(gee mode; only for small grids -- subject to EE interactive limits)")
