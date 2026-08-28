@@ -18,12 +18,25 @@ Random Forest classifier.
    RAM.
 3. `src/ingest_weather.py` — pulls GRIDMET weather variables (temp,
    humidity, wind, precip) via GEE.
-4. `src/build_feature_table.py` — grids all rasters + weather + historical
-   fire ignition points into one row-per-(cell, date) CSV, streamed to
-   disk one weather-date at a time so memory use stays roughly
-   O(grid cells) regardless of the raster size or date range. Also derives
-   simple dryness features (trailing precip sum, days-since-rain) from the
-   weather time series.
+4. `src/build_feature_table.py` — grids rasters + weather + historical fire
+   ignition points into one row-per-(cell, date) CSV, streamed to disk one
+   weather-date at a time so memory use stays roughly O(grid cells)
+   regardless of the raster size or date range. Also derives simple
+   dryness features (trailing precip sum, days-since-rain) from the
+   weather time series. Two ways to run it:
+   - `--mode local`: reads NDVI/elevation/slope/aspect from rasters
+     already on disk (e.g. downloaded from steps 1-2's Drive exports).
+   - `--mode gee` + `--mode finalize`: never downloads a raster at all.
+     Tiles the AOI into a grid with `ee.Geometry.coveringGrid`, builds the
+     NDVI composite and terrain stack as in-memory `ee.Image`s (reusing
+     `build_ndvi_composite`/`build_terrain_stack` from steps 1-2 directly,
+     without exporting them), and reduces both to per-cell means with
+     `reduceRegions` plus a server-side spatial join (`ee.Join.saveAll`)
+     for fire ignitions — all inside Earth Engine. The only thing that
+     comes back is one row per grid cell (`--sync` for a small grid, or an
+     async Drive export otherwise), which `--mode finalize` then joins
+     locally with `weather.csv` — a cheap join over a small table, not a
+     raster operation.
 5. `src/train_model.py` — trains/tunes a RandomForestClassifier
    (RandomizedSearchCV over an expanded parameter grid), reports both a
    spatially/temporally grouped held-out ROC-AUC and a grouped k-fold
@@ -42,6 +55,25 @@ the pipeline, so it'll vary with your AOI, date range, and label quality.
 ```bash
 pip install -r requirements.txt
 earthengine authenticate   # one-time
+```
+
+## Building the feature table without downloading any imagery
+
+```bash
+# 1. Grid the AOI + reduce NDVI/terrain to per-cell means + join fire
+#    ignitions, entirely inside Earth Engine. For a small AOI/grid, --sync
+#    fetches the result directly; drop it to get an async Drive export
+#    instead (needed once the grid gets too large for a synchronous pull).
+python src/build_feature_table.py --mode gee \
+    --region assets/study_area.geojson --start 2025-06-01 --end 2025-09-01 \
+    --cell-size-m 250 --fire-labels data/raw/fire_labels.geojson \
+    --out data/processed/cells.csv --sync
+
+# 2. Join that small per-cell table with weather.csv locally -- this step
+#    only ever touches rows-per-grid-cell-sized data, not rasters.
+python src/build_feature_table.py --mode finalize \
+    --cells data/processed/cells.csv --weather data/processed/weather.csv \
+    --out data/processed/feature_table.csv
 ```
 
 ## Where QGIS fits in

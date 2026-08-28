@@ -20,6 +20,24 @@ import argparse
 import os
 
 
+def build_terrain_stack(region, dem_asset="USGS/3DEP/10m"):
+    """Elevation/slope/aspect as a single 3-band ee.Image over `region`.
+
+    Shared by export_dem_products_gee() (exports the stack as a raster)
+    and build_feature_table.py's --mode gee (reduces the stack directly to
+    per-cell means via reduceRegions, without ever exporting a raster).
+    """
+    import ee
+
+    dem = ee.Image(dem_asset).clip(region)
+    slope = ee.Terrain.slope(dem)
+    aspect = ee.Terrain.aspect(dem)
+
+    return dem.rename("elevation").addBands(slope.rename("slope")).addBands(
+        aspect.rename("aspect")
+    )
+
+
 def export_dem_products_gee(region_path, out_prefix, scale=30):
     import ee
     import geemap
@@ -28,13 +46,7 @@ def export_dem_products_gee(region_path, out_prefix, scale=30):
     region_fc = geemap.geojson_to_ee(region_path)
     region = region_fc.geometry()
 
-    dem = ee.Image("USGS/3DEP/10m").clip(region)
-    slope = ee.Terrain.slope(dem)
-    aspect = ee.Terrain.aspect(dem)
-
-    stack = dem.rename("elevation").addBands(slope.rename("slope")).addBands(
-        aspect.rename("aspect")
-    )
+    stack = build_terrain_stack(region)
 
     task = ee.batch.Export.image.toDrive(
         image=stack,
