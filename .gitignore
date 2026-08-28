@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# Pipeline data + outputs (rasters, exported tables, trained models --
+# regenerate via the ingest/train scripts rather than committing)
+data/
+outputs/
+*.tif
+*.tiff
+*.joblib
+*_metrics.json
+
+# Scratch/test files from local runs
+test_*.geojson
+test_*.csv
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
