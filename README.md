@@ -54,8 +54,14 @@ the pipeline, so it'll vary with your AOI, date range, and label quality.
 
 ```bash
 pip install -r requirements.txt
-earthengine authenticate   # one-time
+python -c "import ee; ee.Authenticate()"   # one-time browser login
 ```
+
+Every script that talks to GEE (`ingest_landsat.py`, `ingest_dem.py --mode
+gee`, `ingest_weather.py`, `build_feature_table.py --mode gee`) takes a
+required `--project <your-earthengine-cloud-project-id>` — `ee.Initialize()`
+with no project id fails outright on current `earthengine-api`. Get a
+project id by registering at https://code.earthengine.google.com/register.
 
 ## Building the feature table without downloading any imagery
 
@@ -67,6 +73,7 @@ earthengine authenticate   # one-time
 python src/build_feature_table.py --mode gee \
     --region assets/study_area.geojson --start 2025-06-01 --end 2025-09-01 \
     --cell-size-m 250 --fire-labels data/raw/fire_labels.geojson \
+    --project your-earthengine-cloud-project-id \
     --out data/processed/cells.csv --sync
 
 # 2. Join that small per-cell table with weather.csv locally -- this step
