@@ -23,6 +23,10 @@ test_*.csv
 real_*.geojson
 real_*.csv
 real_*.log
+scaled_*.geojson
+scaled_*.csv
+scaled_*.log
+wide_*.geojson
 
 # OS/editor cruft
 .DS_Store

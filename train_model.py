@@ -50,9 +50,18 @@ def spatial_train_test_split(df, group_col, test_size=0.2, seed=42):
     return df.iloc[train_idx], df.iloc[test_idx]
 
 
-def tune_model(X_train, y_train, groups, n_iter=40, cv_folds=5, seed=42, n_jobs=-1):
+def tune_model(X_train, y_train, groups, n_iter=40, cv_folds=5, seed=42, n_jobs=-1, max_n_estimators=None):
+    n_estimators_choices = [200, 300, 500, 800, 1200]
+    if max_n_estimators is not None:
+        # Forest fit cost scales roughly linearly with n_estimators * n_rows;
+        # on a large table the biggest choices (800-1200) can each take tens
+        # of minutes per fold. Capping here trades search breadth on this one
+        # hyperparameter for a search that actually finishes.
+        capped = [n for n in n_estimators_choices if n <= max_n_estimators]
+        n_estimators_choices = capped or [max_n_estimators]
+
     param_dist = {
-        "n_estimators": [200, 300, 500, 800, 1200],
+        "n_estimators": n_estimators_choices,
         "max_depth": [None, 8, 12, 20, 30],
         "min_samples_leaf": [1, 2, 4, 8],
         "min_samples_split": [2, 4, 8, 16],
@@ -124,6 +133,11 @@ def main():
                          help="Parallel workers for the hyperparameter search (-1 = all cores). "
                               "The forest itself always runs single-threaded per worker to avoid "
                               "nested parallelism; lower this if you hit memory pressure.")
+    parser.add_argument("--max-n-estimators", type=int, default=None,
+                         help="Cap the largest tree-count the search can pick (default: uncapped, "
+                              "up to 1200). On a large feature table, fits with 800-1200 trees can "
+                              "each take tens of minutes; lower this for a search that finishes "
+                              "in a reasonable time at the cost of exploring fewer/smaller forests.")
     parser.add_argument("--out", default="model.joblib")
     args = parser.parse_args()
 
@@ -136,6 +150,7 @@ def main():
     model, best_params, best_cv_auc = tune_model(
         X_train, y_train, train_df[args.group_col].values,
         n_iter=args.n_iter, cv_folds=args.cv_folds, n_jobs=args.n_jobs,
+        max_n_estimators=args.max_n_estimators,
     )
 
     y_pred_proba = model.predict_proba(X_test)[:, 1]
