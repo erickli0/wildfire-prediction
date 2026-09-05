@@ -84,6 +84,7 @@ def tune_model(X_train, y_train, groups, n_iter=40, cv_folds=5, seed=42, n_jobs=
         cv=cv_splits,
         random_state=seed,
         n_jobs=n_jobs,
+        verbose=2,
     )
     search.fit(X_train, y_train)
     print("Best params:", search.best_params_)
